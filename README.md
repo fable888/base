@@ -5,7 +5,7 @@ Luật tối cao: `CLAUDE.md`. Bản đồ đọc: `docs/DOC_MAP.md`. Stack khó
 ## Bot này làm gì
 
 - Chạy trên Base (`chain_id = 8453`), quét 3 sàn: Aerodrome Slipstream, Uniswap V3, Pancake V3. Aero cổ điển tắt.
-- **Mode 3 duy nhất**: mua token **đã sống** — pool đã có giao dịch Swap thật trong cửa sổ gần nhất, có một vế WETH, LP phía WETH ≥ `min_lp_usd`. Kiểu bảng DexScreener. **Không** sniper pair mới đẻ (Mode 1/2 đã bỏ).
+- **Mode 3 duy nhất**: mua token **đã sống** — pool đã có giao dịch Swap thật trong cửa sổ gần nhất, có một vế WETH **hoặc USDC** (`allow_usdc_quote = true`, văn bản chủ 2026-09-07), LP phía quote ≥ `min_lp_usd`. Kiểu bảng DexScreener. **Không** sniper pair mới đẻ (Mode 1/2 đã bỏ).
 - Mỗi lượt quét lấy tối đa `max_candidates_per_sweep` con (đang 6), bốc theo `candidate_pick` (đang `momentum`: con swap dồn dập 10 phút cuối có xác suất cao hơn), bỏ token lớn trong `denylist` và con đã mua trong 24 h (`token_repeat_cooldown_sec`).
 - Mỗi ứng viên đi qua 12 cửa lọc fail-closed (sim mua rồi bán, tax, impact, proxy, LP…). Rớt 1 cửa = bỏ, log `FILTER_FAIL:<cửa>`. Đang ôm thì mỗi `hold_recheck_sec` (10 phút) chạy lại đủ 12 cửa cho con đang ôm, log `HOLD_RECHECK_OK` / `HOLD_RECHECK_FAIL:<cửa>` (chỉ báo, không tự bán).
 - Qua hết cửa ⇒ mua giấy đúng size `buy_weth_wei` (0,0028 WETH ≈ $7), ghi `BUY_PAPER`, giữ 1 vị thế trong `state/position.json`.
@@ -66,7 +66,34 @@ Không có bước build riêng: `tsx` chạy thẳng TypeScript.
 npm run dashboard        # = npx tsx scripts/dashboard.ts  →  http://127.0.0.1:8787
 ```
 
-Trang tự làm mới mỗi 3 s, chỉ nghe trên 127.0.0.1 (máy này). Hiển thị: bot đang chạy hay không, block, giấy/live, số tx gửi (phải 0); vị thế đang ôm (symbol, lãi/lỗ ròng, đã ôm bao lâu, còn bao nhiêu % nữa tới mốc bán, còn bao lâu tới 24 h, LP, sim bán); phiên (lệnh, PnL dồn, halt); lượt quét gần nhất; đếm rớt cửa; kèo trong `config.toml`; bảng ứng viên (link DexScreener); lệnh đã đóng; 80 dòng log cuối. Nút **Bán giấy ngay / Halt / Reset / disarm** chỉ tạo đúng các file trong `state/` mà bot vẫn đọc, không gửi tx. Đổi cổng: đặt biến môi trường `DASHBOARD_PORT`.
+Trang tự làm mới mỗi 3 s, chỉ nghe trên 127.0.0.1 (máy này). Hiển thị: bot đang chạy hay không, block, giấy/live, số tx gửi (phải 0); vị thế đang ôm (symbol, lãi/lỗ ròng, vốn vào ≈ USD, **số token mua**, **giá mua** ($ / WETH mỗi token, 1 WETH = bao nhiêu token), **giá bán được giờ** (sim bán hết ÷ số token), đã ôm bao lâu, còn bao nhiêu % nữa tới mốc bán, còn bao lâu tới 24 h, LP, sim bán, 12 cửa kiểm lại); phiên (lệnh, PnL dồn, halt); lượt quét gần nhất; đếm rớt cửa; kèo trong `config.toml`; bảng ứng viên (link DexScreener); lệnh đã đóng; 80 dòng log cuối. Nút **Bán giấy ngay / Halt / Reset / disarm** chỉ tạo đúng các file trong `state/` mà bot vẫn đọc, không gửi tx. Đổi cổng: đặt biến môi trường `DASHBOARD_PORT`.
+
+Ý nghĩa từng ô trên web:
+
+| Ô | Nghĩa | Lấy từ đâu |
+|---|---|---|
+| BOT ĐANG CHẠY / IM | có dòng log mới trong 30 s không | `logs/bot.jsonl` |
+| block | block Base mới nhất bot nhận qua WSS | `rpc.block` |
+| giấy / live, tx gửi | `dry_run`, `allow_live`, `bot_armed` lúc bot khởi động; số dòng `tx.send` và `eth_sendRawTransaction` (phải 0) | `bot.start` |
+| vị thế | con đang ôm, cặp WETH hay **cặp USDC (2 chặng)**, % lãi/lỗ ròng (đã trừ phí + gas ước lượng, cặp USDC đã gồm cả 2 chặng đổi), nhãn (`HOLD_LOSS` / `HOLD` / `TP_*`) | `position.open`, `exit.decided` |
+| vốn vào | 0,0028 WETH và ≈ USD theo giá WETH on-chain tại block mua | `position.open` (`lp_usd_at_buy` ÷ reserve WETH) |
+| số token mua | số token nhận được trong sim mua giấy, chia theo `decimals()` đọc on-chain | `sim.buy.token_out_wei` |
+| giá mua | vốn vào ÷ số token: $ mỗi token, WETH mỗi token, 1 WETH = N token | như trên |
+| giá bán được giờ | sim bán hết ÷ số token (giá thực bán ra được, đã gồm phí pool, chưa trừ gas) | `sim.sell.sim_sell_out_weth` |
+| mốc bán | đang ở 60 phút đầu (cần +5 %) hay sau đó (cần +3 %), còn thiếu bao nhiêu % | `config.toml` + `exit.decided` |
+| tới 24 h | còn bao lâu tới `timeout_sec` ⇒ `STOPPED_HOLD` (giữ, không bán) | `config.toml` |
+| LP pool | USD vế WETH của pool bây giờ và lúc mua; tụt ≥ 40 % là bot bán chống rug | `sim.sell.lp_usd_now` |
+| sim bán | `eth_simulateV1` bán hết có thành công không (REVERT = honeypot / hết thanh khoản) | `sim.sell` |
+| 12 cửa kiểm lại | kết quả chạy lại đủ 12 cửa mỗi 10 phút trên con đang ôm; chỉ báo, không bán | `hold.recheck` |
+| RPC unread | số nhịp liên tiếp đọc không được; `kill_unread_while_hold = false` ⇒ không bán | `exit.decided` |
+| phiên | số lệnh đã đóng, PnL dồn, halt | `pnl.closed`, `halt.triggered` |
+| lượt quét gần nhất | số log Swap đọc, pool sống, pool đã xác minh, số ứng viên, chế độ chọn | `scan.sweep` |
+| rớt cửa (đếm) | mỗi cửa chặn bao nhiêu lần từ lúc bot khởi động | `scan.skip` |
+| kèo | các số đang dùng trong `config.toml` (không có secret) | `config.toml` |
+| ứng viên | từng con qua xác minh on-chain: swap 50 ph / 10 ph, LP vế quote (WETH hoặc $ USDC), kết quả. `qua 12 cửa, không mở (đã ôm con khác)` = cùng lượt có 2 con qua cửa, bot chỉ mở 1. Kết quả `KHÔNG MỞ: gas chưa đo được` = qua đủ 12 cửa nhưng bot không chứng minh được slot balance/allowance để đo gas ⇒ theo luật fail-closed không mở (không phải token xấu, chỉ là không đo được) | `scan.seen`, `scan.skip`, `sim.buy` |
+| lệnh đã đóng | mỗi lệnh: lý do, % ròng, WETH, ôm bao lâu | `pnl.closed` |
+| 80 dòng log cuối | nguyên log, mới nhất trên cùng | `logs/bot.jsonl` |
+| đã mua gần đây | con nào đang bị chặn mua lại trong 24 h | `state/recent_buys.json` |
 
 **Xem log** (`log_dir = "./logs"`, file `bot.jsonl`, mỗi dòng một JSON). Field `key` là nhãn ổn định để grep:
 
@@ -74,7 +101,7 @@ Trang tự làm mới mỗi 3 s, chỉ nghe trên 127.0.0.1 (máy này). Hiển 
 |---|---|
 | `SCAN_SWEEP` | một lượt quét Swap (số log, số pool sống, số pool đã xác minh) |
 | `SCAN` | ứng viên đã xác minh on-chain, sắp vào cửa lọc |
-| `FILTER_FAIL:<cửa>` | rớt cửa nào (`pair_no_weth`, `denylisted`, `recently_bought`, `lp_usd`, `tax`, `impact`, `proxy_or_upgrade`, …) |
+| `FILTER_FAIL:<cửa>` | rớt cửa nào (`pair_no_weth` = cặp không có WETH lẫn USDC, `denylisted`, `recently_bought`, `lp_usd`, `tax`, `impact`, `proxy_or_upgrade`, …) |
 | `BUY_PAPER` | mua giấy xong, có `entry_weth` |
 | `TP_PHASE1` / `TP_LATE` | bán giấy vì chốt lời trước / sau `phase1_sec` |
 | `HOLD_LOSS` | đang lỗ, ôm (không bán) |
@@ -160,7 +187,8 @@ Checklist trước khi đụng 2 công tắc live:
 | `watch_living` | `true` | bật vòng quét Swap thật (Mode 3). `false` = không có nguồn ứng viên nào ⇒ 0 lệnh |
 | `living_min_age_sec` | `0` | phải là số nguyên ≥ 0 để load. Vòng Mode 3 hiện **không** dùng sàn tuổi này (chỉ vòng cũ dùng), để 0 |
 | `min_pool_age_sec` | `0` | `0` = cửa `age` PASS không đọc chain. > 0 = đòi block tạo pool, ứng viên Mode 3 không có ⇒ rớt hết |
-| `min_lp_usd` | `10000` | LP **chỉ tính phía WETH** (số WETH trong pool × giá WETH/USD đọc từ pool WETH/USDC đã pin). Token vế kia không cộng |
+| `allow_usdc_quote` | `true` | nhận cả pool **token/USDC**. Vốn vẫn là WETH: mua đi 2 chặng WETH→USDC (pool WETH/USDC đã pin, Uni V3 fee 500) rồi USDC→token; bán ngược lại. Phí thêm ≈ 0,05 % mỗi chiều + gas 4 chân hop (~313 000 gas). Token có cả pool WETH và pool USDC ⇒ bot **ưu tiên pool WETH**. `false` = chỉ WETH như trước. Thiếu field ⇒ `false` |
+| `min_lp_usd` | `10000` | LP **chỉ tính phía quote**: pool WETH = số WETH trong pool × giá WETH/USD đọc từ pool WETH/USDC đã pin; pool USDC = số USDC trong pool (đọc thẳng). Token vế kia không cộng |
 | `scan_aero_classic` | `false` | giữ `false`. Không có code route Aero cổ điển |
 | `live_aero_slip` / `live_uni_v3` / `live_pancake_v3` | `false` | chỉ quyết định venue được **gửi tx thật**. `false` **không** tắt quét venue đó |
 | `denylist` | 45 address | token lớn / stable / wrapped bị bỏ ngay lúc quét để bot chỉ còn meme (xem mục E) |
@@ -369,7 +397,7 @@ Checklist 8 mục (mục 4 + mục 9 CLAUDE.md):
 4. Thấy `chain ok: eth_chainId=0x2105` và `bot.start ghi xong`. Nếu in `MISSING: CHAINSTACK_HTTP` thì `.env` chưa điền.
 5. Mở cửa sổ thứ hai: `tail -f logs/bot.jsonl` (hoặc `Get-Content logs\bot.jsonl -Wait -Tail 20`).
 6. Sau ~1–2 phút phải có `SCAN_SWEEP` với `pools_active` > 0, rồi các dòng `SCAN` (ứng viên có `lp_weth_wei`, `swaps_in_window`).
-7. Với mỗi ứng viên: `FILTER_FAIL:<cửa>` hoặc `BUY_PAPER`. Mở `state/position.json` để xem token, pool, `entry_weth = 2800000000000000`.
+7. Với mỗi ứng viên: `FILTER_FAIL:<cửa>` hoặc `BUY_PAPER`. Từ dòng `SCAN` tới `BUY_PAPER` mất ~15–30 s: đó là thời gian RPC của 12 cửa (đọc bytecode, LP, `eth_simulateV1` mua-bán, đo gas), không phải bot cố ý đợi. Các ứng viên trong cùng lượt được lọc song song (từ 2026-09-07), nên 6 con không còn tốn 6 × 15 s. Mở `state/position.json` để xem token, pool, `entry_weth = 2800000000000000`.
 8. Đang ôm: mỗi nhịp có `exit.decided` với `key` là `HOLD_LOSS` (lỗ, ôm) hoặc `HOLD` (lãi chưa đủ). Bot không quét thêm khi đang ôm. Cứ 10 phút có một dòng `hold.recheck` (12 cửa chạy lại); dashboard hiện ở ô "12 cửa kiểm lại".
 9. Lãi ròng ≥ +5 % trong 60 phút đầu ⇒ `TP_PHASE1` rồi `position.close`, `pnl.closed`; sau 60 phút ≥ +3 % ⇒ `TP_LATE`. Lãi ⇒ SCANNING tiếp sau `cooldown_sec`. Lỗ ⇒ STOPPED.
 10. Đủ 24 h chưa bán ⇒ `STOPPED_HOLD`, bot dừng săn nhưng giữ `position.json`.
@@ -388,6 +416,9 @@ Checklist 8 mục (mục 4 + mục 9 CLAUDE.md):
 | `FILTER_FAIL:tax` / `impact` hàng loạt | `max_buy_tax`, `max_sell_tax`, `max_buy_impact` | `grep -E '"key":"FILTER_FAIL:(tax|impact)' logs/bot.jsonl \| tail -3` rồi đọc field `detail`. `tax_unread` = node không sim được, không phải token xấu. Không nới ngưỡng |
 | `age` rớt hết | `min_pool_age_sec` | phải = 0 cho Mode 3. `grep '"key":"FILTER_FAIL:age"' logs/bot.jsonl` |
 | WSS chết / reconnect liên tục | `ws_silence_sec`, `halt_on_ws_dead` | Nhìn console: dòng `ws_silence: action=reconnect attempt=N`. Trong log: `grep -c '"event":"rpc.block"' logs/bot.jsonl` phải tăng đều (~1 dòng / 2 s). `CHAINSTACK_WS` trong `.env` phải là `wss://` |
+| Thấy `SCAN` rồi mà cả phút sau mới `BUY_PAPER` | không có config nào | `min_pool_age_sec = 0` và `living_min_age_sec = 0` đã tắt mọi cửa đợi tuổi. Chậm là RPC: mỗi con ~15 s cho 12 cửa. Đã lọc song song; nếu vẫn chậm là do Chainstack trả lời chậm, xem thời gian giữa hai dòng `rpc.block` |
+| Muốn nhiều ứng viên hơn | `allow_usdc_quote`, `max_candidates_per_sweep`, `min_lp_usd` | `allow_usdc_quote = true` (đã bật) mở thêm cặp USDC (≈ gấp đôi ứng viên theo log 2026-09-07); `grep -c '"quote":"0x833589' logs/bot.jsonl` đếm ứng viên USDC. Dòng `SCAN` có `lp_usdc_e6` (USD × 1e6) thay `lp_weth_wei`; `BUY_PAPER` có `usdc_in` = số USDC chặng 1 |
+| Ứng viên hiện `KHÔNG MỞ: gas chưa đo được` trên web | `buy_max_gas_eth_wei` không liên quan | Bot qua đủ 12 cửa nhưng không chứng minh được slot balance/allowance của token để `eth_estimateGas` ⇒ luật fail-closed không mở. Không có nút nới; token khác sẽ được xét ở lượt sau |
 | Bật lại bot là mua đúng con cũ | `candidate_pick`, `token_repeat_cooldown_sec` | phải là `momentum`/`random` và `86400`; `grep -c recently_bought logs/bot.jsonl` > 0 là đang chặn; `cat state/recent_buys.json` xem con nào đang bị chặn |
 | Bot không lên, in danh sách lỗi config | field thiếu / sai kiểu | đọc dòng lỗi; số wei phải là chuỗi `"…"`; `max_open_positions` phải 1; `tp_net_pct` > `late_tp_net_pct` |
 
